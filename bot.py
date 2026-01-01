@@ -66,7 +66,12 @@ def send_welcome(message):
         bot.reply_to(message, "✅ Welcome Boss! Main taiyar hoon messages receive karne ke liye.")
     else:
         # User ko jawab
-        bot.reply_to(message, "👋 Hii! Aapka message Admin tak pahuch gaya hai. Wo aapko jald reply karenge.")
+        bot.reply_to(message, "Hii! 😊
+Aapka message Admin tak pahuncha diya jaayega 📩
+Wo aapko jald hi reply karenge ⏳✨
+
+👉 Apna message yahan likh dijiye ✍️
+Thank You! 🙏💫")
 
 # Jab koi User message kare (Admin ko forward hoga)
 # Ye function user ke private chat messages ko ADMIN_ID ko forward karega
