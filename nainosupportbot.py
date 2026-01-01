@@ -1,96 +1,96 @@
 import telebot
 import sqlite3
-from telebot import types
+import threading
+import os
+from flask import Flask
 
 # --- CONFIGURATION ---
-API_TOKEN = '8411214861:AAEBlPqlX5Vrc2xcEIncp8rWtHeKiJteL2w'  # BotFather se lo
-ADMIN_ID = 7755459773              # Apni ID daalo (@userinfobot se milegi)
+# Yahan apna Token aur ID daalein
+API_TOKEN = '8411214861:AAEBlPqlX5Vrc2xcEIncp8rWtHeKiJteL2w' 
+ADMIN_ID = 7755459773 # Apni numerical ID daalo
 
 bot = telebot.TeleBot(API_TOKEN)
+app = Flask(__name__)
 
-# --- DATABASE SETUP ---
+# --- WEB SERVER FOR UPTIME ROBOT ---
+@app.route('/')
+def index():
+    return "<h1>Bot is Running!</h1><p>UptimeRobot is monitoring this page.</p>"
+
+def run_flask():
+    # Render ke liye port set karna
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# --- DATABASE LOGIC ---
 def init_db():
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect('data.db', check_same_thread=False)
     cursor = conn.cursor()
-    # Users table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users 
-                      (user_id INTEGER PRIMARY KEY, first_name TEXT, username TEXT)''')
-    # Messages mapping (to reply easily)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS msg_map 
-                      (admin_msg_id INTEGER PRIMARY KEY, user_id INTEGER)''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS msg_map (admin_msg_id INTEGER PRIMARY KEY, user_id INTEGER)')
     conn.commit()
-    conn.close()
+    return conn
 
-init_db()
+db_conn = init_db()
 
-# --- HELPER FUNCTIONS ---
-def save_user(user_id, first_name, username):
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users VALUES (?, ?, ?)", (user_id, first_name, username))
-    conn.commit()
-    conn.close()
+def save_mapping(admin_msg_id, user_id):
+    cursor = db_conn.cursor()
+    cursor.execute('INSERT INTO msg_map VALUES (?, ?)', (admin_msg_id, user_id))
+    db_conn.commit()
 
-def map_msg(admin_msg_id, user_id):
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO msg_map VALUES (?, ?)", (admin_msg_id, user_id))
-    conn.commit()
-    conn.close()
-
-def get_user_from_msg(admin_msg_id):
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM msg_map WHERE admin_msg_id = ?", (admin_msg_id,))
+def get_user_id(admin_msg_id):
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT user_id FROM msg_map WHERE admin_msg_id = ?', (admin_msg_id,))
     result = cursor.fetchone()
-    conn.close()
     return result[0] if result else None
 
-# --- HANDLERS ---
+# --- BOT HANDLERS ---
 
 @bot.message_handler(commands=['start'])
-def start(message):
-    if message.chat.id != ADMIN_ID:
-        save_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
-        bot.send_message(message.chat.id, "👋 Hii! Aapka message admin ko bhej diya gaya hai. Wait karein...")
+def send_welcome(message):
+    if message.chat.id == ADMIN_ID:
+        bot.reply_to(message, "✅ Welcome Boss! Main taiyar hoon messages receive karne ke liye.")
     else:
-        bot.send_message(ADMIN_ID, "🚀 Admin Panel Active! Users ke messages yahan aayenge.")
+        bot.reply_to(message, "👋 Hii! Aapka message Admin tak pahuch jayega. Wo aapko jald reply karenge.")
 
-# Jab koi user message bhejta hai
+# Jab koi User message kare (Admin ko forward hoga)
 @bot.message_handler(func=lambda message: message.chat.id != ADMIN_ID)
-def handle_user_msg(message):
+def forward_to_admin(message):
     user = message.from_user
-    save_user(user.id, user.first_name, user.username)
+    # Profile Card banana
+    profile = (f"👤 **Naya Message!**\n"
+               f"━━━━━━━━━━━━━━\n"
+               f"📝 Name: {user.first_name}\n"
+               f"🔗 Username: @{user.username if user.username else 'None'}\n"
+               f"🆔 User ID: `{user.id}`\n"
+               f"💬 Msg: {message.text}\n"
+               f"━━━━━━━━━━━━━━\n"
+               f"ℹ️ *Reply karne ke liye isi message par 'Reply' karein.*")
     
-    # Profile Card for Admin
-    profile_text = (f"👤 **Naya Message!**\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"📝 Name: {user.first_name}\n"
-                    f"🔗 Username: @{user.username if user.username else 'N/A'}\n"
-                    f"🆔 ID: `{user.id}`\n"
-                    f"💬 Msg: {message.text}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"ℹ️ *Reply karne ke liye isi message par 'Reply' karein.*")
-    
-    sent_msg = bot.send_message(ADMIN_ID, profile_text, parse_mode="Markdown")
-    
-    # Message mapping save karna taaki admin reply kar sake
-    map_msg(sent_msg.message_id, user.id)
+    try:
+        sent_msg = bot.send_message(ADMIN_ID, profile, parse_mode="Markdown")
+        # Database me mapping save karein
+        save_mapping(sent_msg.message_id, user.id)
+    except Exception as e:
+        print(f"Error forwarding: {e}")
 
-# Admin jab reply karega
+# Admin jab kisi message par Reply kare
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message is not None)
 def handle_admin_reply(message):
     original_msg_id = message.reply_to_message.message_id
-    target_user_id = get_user_from_msg(original_msg_id)
+    target_user_id = get_user_id(original_msg_id)
     
     if target_user_id:
         try:
-            bot.send_message(target_user_id, f"✉️ **Admin:** {message.text}")
+            bot.send_message(target_user_id, f"✉️ **Admin ka Jawab:**\n\n{message.text}")
             bot.reply_to(message, "✅ Jawab bhej diya gaya!")
         except Exception:
-            bot.reply_to(message, "❌ Error: Shayad user ne bot block kar diya hai.")
+            bot.reply_to(message, "❌ Error: Shayad user ne bot block kar diya.")
     else:
         bot.reply_to(message, "❌ Ye message kis user ka hai, database me nahi mila.")
 
-print("Bot is running...")
-bot.infinity_polling()
+# --- START BOT ---
+if __name__ == "__main__":
+    # Flask ko thread me chalana taaki bot aur web sath chalein
+    threading.Thread(target=run_flask).start()
+    print("Bot is starting...")
+    bot.infinity_polling()
