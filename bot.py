@@ -1,116 +1,166 @@
 import telebot
 import sqlite3
 import threading
+import time
 import os
 import sys
+import google.generativeai as genai
 from flask import Flask
+from master_prompt import SYSTEM_PROMPT # Prompt import kiya gaya
 
 # --- CONFIGURATION (Environment Variables se Load karna) ---
-# Environment Variables set karein: TELEGRAM_API_TOKEN aur ADMIN_ID
 API_TOKEN = os.environ.get('TELEGRAM_API_TOKEN')
+GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 
 try:
-    # ADMIN_ID ko integer mein badalna zaroori hai
-    ADMIN_ID = int(os.environ.get('ADMIN_TELEGRAM_ID'))
+    # GROUP_ID ko integer mein badalna zaroori hai
+    GROUP_ID = int(os.environ.get('TELEGRAM_GROUP_ID'))
 except (TypeError, ValueError):
-    # Agar variable set nahi hai ya galat hai toh error dega
-    print("ERROR: ADMIN_TELEGRAM_ID not set or invalid in environment variables.")
+    print("ERROR: TELEGRAM_GROUP_ID not set or invalid in environment variables.")
     sys.exit(1)
 
-if not API_TOKEN:
-    print("ERROR: TELEGRAM_API_TOKEN not set in environment variables.")
+if not all([API_TOKEN, GEMINI_KEY]):
+    print("ERROR: Missing TELEGRAM_API_TOKEN or GEMINI_API_KEY environment variable.")
     sys.exit(1)
 
-
+# AI and Bot Setup
+genai.configure(api_key=GEMINI_KEY)
+model = genai.GenerativeModel('gemini-pro')
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# --- WEB SERVER FOR UPTIME ROBOT ---
-@app.route('/')
-def index():
-    return "<h1>Simple Forwarding Bot is Running!</h1><p>UptimeRobot is monitoring this page.</p>"
-
-def run_flask():
-    # Render ke liye port set karna
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-# --- DATABASE LOGIC ---
-# Note: Isme thread safety ke liye check_same_thread=False zaroori hai
+# --- DATABASE SETUP ---
 def init_db():
-    conn = sqlite3.connect('forward_data.db', check_same_thread=False)
+    # check_same_thread=False zaroori hai threading ke liye
+    conn = sqlite3.connect('chat_bot.db', check_same_thread=False) 
     cursor = conn.cursor()
-    # admin_msg_id ko user_id se map karna
-    cursor.execute('CREATE TABLE IF NOT EXISTS msg_map (admin_msg_id INTEGER PRIMARY KEY, user_id INTEGER)')
+    # Table 1: Topic mapping aur last reply time
+    cursor.execute('CREATE TABLE IF NOT EXISTS topics (user_id INTEGER PRIMARY KEY, topic_id INTEGER, last_reply_time REAL)')
+    # Table 2: Chat History (Memory)
+    cursor.execute('CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT)')
     conn.commit()
     return conn
 
-db_conn = init_db()
+db = init_db()
 
-def save_mapping(admin_msg_id, user_id):
-    cursor = db_conn.cursor()
-    cursor.execute('INSERT INTO msg_map VALUES (?, ?)', (admin_msg_id, user_id))
-    db_conn.commit()
+# --- DATABASE HELPERS ---
+def save_msg(user_id, role, content):
+    # Message ko history mein save karna
+    cursor = db.cursor()
+    cursor.execute('INSERT INTO history (user_id, role, content) VALUES (?, ?, ?)', (user_id, role, content))
+    db.commit()
 
-def get_user_id(admin_msg_id):
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT user_id FROM msg_map WHERE admin_msg_id = ?', (admin_msg_id,))
-    result = cursor.fetchone()
-    return result[0] if result else None
+def get_history(user_id):
+    # Pichle 15 messages nikalna (AI context ke liye)
+    cursor = db.cursor()
+    cursor.execute('SELECT role, content FROM history WHERE user_id = ? ORDER BY rowid DESC LIMIT 15', (user_id,))
+    rows = cursor.fetchall()
+    
+    history = []
+    # Gemini ko 'user' aur 'model' role chahiye
+    for role, content in reversed(rows):
+        role_type = 'user' if role == 'user' else 'model'
+        history.append({"role": role_type, "parts": [content]})
+    return history
+
+def get_topic_data(user_id):
+    # Last reply time check karna
+    cursor = db.cursor()
+    cursor.execute('SELECT topic_id, last_reply_time FROM topics WHERE user_id = ?', (user_id,))
+    return cursor.fetchone()
+
+def update_time(user_id):
+    # Admin ke reply par time update karna (AI ko rokne ke liye)
+    cursor = db.cursor()
+    cursor.execute('UPDATE topics SET last_reply_time = ? WHERE user_id = ?', (time.time(), user_id))
+    db.commit()
+
+# --- AI LOGIC (30 SEC WAIT + MEMORY) ---
+def ai_assistant_thread(user_id, topic_id):
+    time.sleep(30) # 30 seconds ka intezaar
+
+    data = get_topic_data(user_id)
+    last_reply = data[1] if data else 0
+
+    # Check: Kya 30 sec se Admin ne reply nahi kiya? (28 sec ka buffer)
+    if (time.time() - last_reply) > 28:
+        chat_history = get_history(user_id)
+        
+        try:
+            # Chat history ke saath AI conversation start karna
+            chat = model.start_chat(history=chat_history)
+            
+            # Master Prompt ko bhej kar AI se naya jawab mangna
+            response = chat.send_message(SYSTEM_PROMPT) 
+            ai_reply = response.text
+            
+            # Reply user ko bhej dena
+            bot.send_message(user_id, f"🤖 {ai_reply}")
+            # Aur group ke topic mein bhi record rakhna
+            bot.send_message(GROUP_ID, f"🤖 **AI Assistant:** {ai_reply}", message_thread_id=topic_id)
+            
+            # AI ke jawab ko bhi history mein save karna
+            save_msg(user_id, 'model', ai_reply) 
+        except Exception as e:
+            print(f"AI Error for user {user_id}: {e}")
 
 # --- BOT HANDLERS ---
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if message.chat.id == ADMIN_ID:
-        bot.reply_to(message, "✅ Welcome Boss! Main taiyar hoon messages receive karne ke liye.")
+@bot.message_handler(func=lambda m: m.chat.type == 'private')
+def handle_user_msg(message):
+    user_id = message.from_user.id
+    name = message.from_user.first_name
+    text = message.text
+
+    data = get_topic_data(user_id)
+
+    if not data:
+        # Naya user: Topic create karna
+        topic = bot.create_forum_topic(GROUP_ID, f"{name} ({user_id})")
+        topic_id = topic.message_thread_id
+        cursor = db.cursor()
+        cursor.execute('INSERT INTO topics VALUES (?, ?, ?)', (user_id, topic_id, time.time())) # Time.time() initial set
+        db.commit()
     else:
-        # User ko jawab
-        bot.reply_to(message, "Hii! 😊Aapka message Admin tak pahuncha diya jaayega  📩Wo aapko jald hi reply karenge ⏳   👉 Apna message yahan likh dijiye ✍️Thank You! 🙏")
+        topic_id = data[0]
+        update_time(user_id) # User ke message par bhi time update karo (taki AI uske hi message par khud reply na kare)
 
-# Jab koi User message kare (Admin ko forward hoga)
-# Ye function user ke private chat messages ko ADMIN_ID ko forward karega
-@bot.message_handler(func=lambda message: message.chat.id != ADMIN_ID and message.chat.type == 'private')
-def forward_to_admin(message):
-    user = message.from_user
-    # Profile Card banana
-    profile = (f"👤 **Naya Message!**\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"📝 Name: {user.first_name}\n"
-               f"🔗 Username: @{user.username if user.username else 'None'}\n"
-               f"🆔 User ID: `{user.id}`\n"
-               f"💬 Msg: {message.text}\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"ℹ️ *Reply karne ke liye isi message par 'Reply' karein.*")
+    # User ke message ko history aur group mein save karna
+    save_msg(user_id, 'user', text)
+    bot.send_message(GROUP_ID, f"👤 **{name}**: {text}", message_thread_id=topic_id)
     
-    try:
-        # Message ko Admin ko bhejo
-        sent_msg = bot.send_message(ADMIN_ID, profile, parse_mode="Markdown")
-        # Database me mapping save karein
-        save_mapping(sent_msg.message_id, user.id)
-    except Exception as e:
-        print(f"Error forwarding: {e}")
-        # Agar Admin ID galat ho ya bot ne Admin se baat na ki ho toh yahan error aayega
-        bot.send_message(user.id, "❌ Sorry, Admin tak message nahi pahucha. Shayad koi technical problem hai.")
+    # AI timer thread chalu karna
+    threading.Thread(target=ai_assistant_thread, args=(user_id, topic_id)).start()
 
-# Admin jab kisi message par Reply kare (Sirf Admin se aane wale reply par trigger hoga)
-@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message is not None)
+@bot.message_handler(func=lambda m: m.chat.id == GROUP_ID and m.is_topic_message)
 def handle_admin_reply(message):
-    original_msg_id = message.reply_to_message.message_id
-    target_user_id = get_user_id(original_msg_id)
-    
-    if target_user_id:
-        try:
-            bot.send_message(target_user_id, f"✉️ **Admin ka Jawab:**\n\n{message.text}")
-            bot.reply_to(message, "✅ Jawab bhej diya gaya!")
-        except Exception:
-            bot.reply_to(message, "❌ Error: Shayad user ne bot block kar diya.")
-    else:
-        bot.reply_to(message, "❌ Ye message kis user ka hai, database me nahi mila.")
+    topic_id = message.message_thread_id
+    cursor = db.cursor()
+    cursor.execute('SELECT user_id FROM topics WHERE topic_id = ?', (topic_id,))
+    res = cursor.fetchone()
 
-# --- START BOT ---
+    if res:
+        user_id = res[0]
+        update_time(user_id) # MOST IMPORTANT: Admin ke reply par time update
+        save_msg(user_id, 'model', message.text) # Admin ki baat AI ki memory mein daalo
+
+        try:
+            bot.send_message(user_id, f"👨‍💻 **Admin:** {message.text}")
+        except:
+            bot.reply_to(message, "❌ User tak message nahi gaya. Shayad usne bot block kar diya hai.")
+
+# --- WEB SERVER (Render ke liye) ---
+@app.route('/')
+def home(): 
+    return "<h1>Naino Academy Hybrid Bot is Online!</h1><p>Bot is running with AI and Admin support.</p>"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    # Flask ko run karna
+    app.run(host='0.0.0.0', port=port)
+
 if __name__ == "__main__":
-    # Flask ko thread me chalana taaki bot aur web sath chalein
-    threading.Thread(target=run_flask).start()
-    print("Bot is starting...")
+    # Web server aur Bot polling ko alag threads mein run karna
+    threading.Thread(target=run_web_server).start()
+    print("Hybrid Bot is now LIVE. Polling started...")
     bot.infinity_polling()
