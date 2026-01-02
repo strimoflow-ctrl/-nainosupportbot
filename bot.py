@@ -32,14 +32,15 @@ GROUP_LINK = "https://t.me/nainoneet"
 BUTTON_TEXT = "🚀 Join Naino NEET Group"
 
 # --- DATABASE SETUP (All same) ---
+# --- SAHI INDENTATION ---
 def init_db():
-   conn = sqlite3.connect('chat_bot.db', check_same_thread=False)
+    # Saari lines ek hi tab/space level par honi chahiye
+    conn = sqlite3.connect('chat_bot.db', check_same_thread=False) 
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS topics (user_id INTEGER PRIMARY KEY, topic_id INTEGER, last_reply_time REAL)')
     cursor.execute('CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT)')
     conn.commit()
     return conn
-
 db = init_db()
 
 # --- DATABASE HELPERS (All same) ---
