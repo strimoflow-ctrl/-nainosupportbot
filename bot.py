@@ -33,7 +33,7 @@ BUTTON_TEXT = "🚀 Join Naino NEET Group"
 
 # --- DATABASE SETUP (All same) ---
 def init_db():
-    conn = sqliteite3.connect('chat_bot.db', check_same_thread=False) 
+   conn = sqlite3.connect('chat_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS topics (user_id INTEGER PRIMARY KEY, topic_id INTEGER, last_reply_time REAL)')
     cursor.execute('CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT)')
