@@ -137,13 +137,13 @@ def handle_admin_reply(message):
         try:
             # Jawab user ko bhejo
             admin_name = message.from_user.first_name or "Admin"
-            bot.send_message(user_id, f"👨‍💻 **{admin_name}:** {message.text}")
+            bot.send_message(user_id, f"👨‍💻 {Admin}: {message.text}")
             
             # CONFIRMATION FIX: Hata kar sirf green tick bhejo (Reply to the admin's message)
-            bot.reply_to(message, "✅") 
+            bot.reply_to(message, "✓✓") 
             
         except:
-            bot.reply_to(message, "❌")
+            bot.reply_to(message, "××")
 
 # --- WEB SERVER (Render ke liye) ---
 @app.route('/')
