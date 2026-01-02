@@ -142,7 +142,7 @@ def handle_admin_reply(message):
             bot.reply_to(message, "✅") 
             
         except:
-            bot.reply_to(message, "❌ User tak message nahi gaya. Shayad usne bot block kar diya hai.")
+            bot.reply_to(message, "❌")
 
 # --- WEB SERVER (Render ke liye) ---
 @app.route('/')
