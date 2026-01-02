@@ -11,8 +11,8 @@ from telebot import types
 API_TOKEN = os.environ.get('TELEGRAM_API_TOKEN')
 
 try:
+    # GROUP_ID aur ADMIN_ID dono ki zaroorat hai
     GROUP_ID = int(os.environ.get('TELEGRAM_GROUP_ID'))
-    # ADMIN_ID ki zaroorat Admin Reply check ke liye zaroori hai
     ADMIN_ID = int(os.environ.get('ADMIN_TELEGRAM_ID')) 
 except (TypeError, ValueError):
     print("ERROR: Environment variables TELEGRAM_GROUP_ID or ADMIN_TELEGRAM_ID are missing or invalid.")
@@ -25,25 +25,23 @@ if not API_TOKEN:
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# --- INLINE BUTTON CONFIGURATION (Aasani se change/remove karne ke liye) ---
-# Agar button nahi chahiye to IS_BUTTON_ENABLED ko False kar do
+# --- INLINE BUTTON CONFIGURATION ---
 IS_BUTTON_ENABLED = True 
 GROUP_LINK = "https://t.me/nainoneet"
 BUTTON_TEXT = "🚀 Join Naino NEET Group"
 
-# --- DATABASE SETUP (All same) ---
-# --- SAHI INDENTATION ---
+# --- DATABASE SETUP (SQLite) ---
 def init_db():
-    # Saari lines ek hi tab/space level par honi chahiye
     conn = sqlite3.connect('chat_bot.db', check_same_thread=False) 
     cursor = conn.cursor()
+    # topics table ka use Topic ID aur User ID ko map karne ke liye
     cursor.execute('CREATE TABLE IF NOT EXISTS topics (user_id INTEGER PRIMARY KEY, topic_id INTEGER, last_reply_time REAL)')
     cursor.execute('CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT)')
     conn.commit()
     return conn
 db = init_db()
 
-# --- DATABASE HELPERS (All same) ---
+# --- DATABASE HELPERS ---
 def save_msg(user_id, role, content):
     cursor = db.cursor()
     cursor.execute('INSERT INTO history (user_id, role, content) VALUES (?, ?, ?)', (user_id, role, content))
@@ -65,23 +63,21 @@ def update_time(user_id):
 def send_welcome(message):
     if message.chat.type == 'private':
         
-        # Welcome message as requested
         welcome_text = (
             "👋 **Welcome to Naino Academy Support!**\n\n"
             "Drop your message here. Admin will reply soon."
         )
         
-        # Button banaya
         markup = None
         if IS_BUTTON_ENABLED:
             markup = types.InlineKeyboardMarkup()
             url_button = types.InlineKeyboardButton(text=BUTTON_TEXT, url=GROUP_LINK)
             markup.add(url_button)
 
-        # Message bhejo
         bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=markup)
         
     elif message.chat.id == GROUP_ID:
+        # Topic 1 (General) mein confirmation
         bot.send_message(GROUP_ID, "✅ Bot Active! New user messages will create topics here.", message_thread_id=1)
 
 
@@ -94,7 +90,7 @@ def handle_user_msg(message):
     data = get_topic_data(user_id)
 
     if not data:
-        # Naya user: Topic create karna
+        # Naya user: Topic create karna (User ka ID aur Naam Topic Title mein)
         try:
             topic = bot.create_forum_topic(GROUP_ID, f"{name} ({user_id})")
             topic_id = topic.message_thread_id
@@ -110,17 +106,16 @@ def handle_user_msg(message):
         topic_id = data[0]
         update_time(user_id)
 
-    # User ke message ko history aur GROUP ke ussi topic mein save karna (Clean format)
+    # User ke message ko history aur GROUP ke ussi topic mein save karna (Clean format: only text)
     save_msg(user_id, 'user', text)
     bot.send_message(GROUP_ID, f"💬 {text}", message_thread_id=topic_id)
     
-    # AI/Timer thread intentionally removed
 
 @bot.message_handler(func=lambda m: m.chat.id == GROUP_ID and m.is_topic_message)
 def handle_admin_reply(message):
     topic_id = message.message_thread_id
     
-    # Only allow replies from the designated ADMIN_ID
+    # Security Check: Only allow replies from the designated ADMIN_ID
     if message.from_user.id != ADMIN_ID:
          bot.reply_to(message, "❌ Sirf authorized admin hi user ko reply kar sakte hain.")
          return
@@ -135,15 +130,16 @@ def handle_admin_reply(message):
         save_msg(user_id, 'model', message.text) 
 
         try:
-            # Jawab user ko bhejo
-            admin_name = message.from_user.first_name or "Admin"
-            bot.send_message(user_id, f"👨‍💻 {admin_name}: {message.text}")
+            # FIX 1: Admin Name Hidden
+            # Jawab user ko bhejo (User ko sirf bot ka display name aur 👨‍💻 emoji dikhega)
+            bot.send_message(user_id, f"👨‍💻 {message.text}")
             
-            # CONFIRMATION FIX: Hata kar sirf green tick bhejo (Reply to the admin's message)
-            bot.reply_to(message, "✅ Done") 
+            # FIX 2: No Green Tick/Done Message (Silent Success)
+            # Success hone par group mein koi reply nahi jayega
             
         except:
-            bot.reply_to(message, "❌ User Block The Bot")
+            # Failure message (Block hone par hi ye dikhega)
+            bot.reply_to(message, "❌ User Blocked Bot") 
 
 # --- WEB SERVER (Render ke liye) ---
 @app.route('/')
@@ -155,6 +151,7 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
+    # Web server aur Bot polling ko alag threads mein run karna
     threading.Thread(target=run_web_server).start()
     print("Support Bot is now LIVE. Polling started...")
     bot.infinity_polling()
